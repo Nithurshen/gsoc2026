@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#121212" media="(prefers-color-scheme: dark)">
+<title>GSoC 2026</title>
+<meta name="color-scheme" content="light dark">
+<meta name="description" content="GSoC 2026 final report by K S Nithurshen: concurrent directory traversal and multi-threaded decompression for fsck.erofs (erofs-utils).">
+<link rel="stylesheet" href="style.css">
+
+</head>
+<body>
+<main>
+
+  <header>
+    <p class="handle">Google Summer of Code 2026 &middot; EROFS Filesystem &middot; Final Report</p>
+    <h1>Multi-threaded Extraction for <code>fsck.erofs</code></h1>
+    <p class="bio prose">I made <code>fsck.erofs</code> check and extract EROFS images on all CPU cores instead of one. Directories are walked by a pool of worker threads, and large LZMA and DEFLATE files are decompressed in parallel batches.</p>
+    <dl class="facts">
+      <div><dt>Contributor</dt><dd>K S Nithurshen &middot; <a href="https://github.com/Nithurshen" target="_blank" rel="noopener">@Nithurshen</a></dd></div>
+      <div><dt>Mentors</dt><dd><a href="https://github.com/hsiangkao" target="_blank" rel="noopener">Xiang Gao</a>, <a href="https://github.com/SToPire" target="_blank" rel="noopener">Yifan Zhao</a>, Chunhai Guo</dd></div>
+      <div><dt>Project</dt><dd><a href="https://summerofcode.withgoogle.com/programs/2026/projects/mSWHC0AO" target="_blank" rel="noopener">GSoC project page</a> &middot; Large, 350 h</dd></div>
+      <div><dt>Repository</dt><dd><a href="https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git" target="_blank" rel="noopener">erofs-utils</a> &middot; <a href="https://erofs.docs.kernel.org/" target="_blank" rel="noopener">EROFS docs</a></dd></div>
+      <div><dt>Applied to</dt><dd><a href="https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/log/?h=experimental-mt-extraction" target="_blank" rel="noopener"><code>experimental-mt-extraction</code></a></dd></div>
+      <div><dt>Period</dt><dd>May 2026 &ndash; October 2026</dd></div>
+    </dl>
+    <nav class="toc" aria-label="Page sections">
+      <ul>
+        <li><a href="#summary">Summary</a></li>
+        <li><a href="#patches">The Patches</a></li>
+        <li><a href="#how">How It Works</a></li>
+        <li><a href="#results">Results</a></li>
+        <li><a href="#timeline">Timeline</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <section id="summary" aria-labelledby="h-summary">
+    <h2 id="h-summary">Summary</h2>
+    <div class="prose stack">
+      <p><code>fsck.erofs</code> is the checking tool for <a href="https://erofs.docs.kernel.org/" target="_blank" rel="noopener">EROFS</a>, the compressed read-only Linux filesystem. It checks EROFS images and can unpack them to a directory with <code>--extract</code>. Before this project it ran on one thread: it walked the directory tree, read each inode, decompressed each physical cluster (pcluster) and wrote the output, one item at a time. On images compressed with LZMA, decompression took most of the run time and the directory walk waited behind it.</p>
+      <p>The work is two patches that build on each other. Patch 1 runs the directory walk on a pool of traversal workers. Patch 2 adds a per-CPU decompression pool for large LZMA and DEFLATE files, where each worker writes its output straight to the right file offset.</p>
+    </div>
+    <div class="figures">
+      <div class="figure"><span class="alg">lz4hc</span><span class="num">25&ndash;31%</span><span class="what">less extraction time</span></div>
+      <div class="figure"><span class="alg">zstd</span><span class="num">32&ndash;35%</span><span class="what">less extraction time</span></div>
+      <div class="figure"><span class="alg">lzma</span><span class="num">72&ndash;77%</span><span class="what">less extraction time; 76&nbsp;s down to 18&nbsp;s at 64&nbsp;KiB clusters</span></div>
+    </div>
+    <blockquote>
+      <p>&ldquo;Thanks for your efforts on finishing our GSoC project. I've applied your patches to experimental-mt-extraction, it works, but I will finalize myself so that it could merge upstream.&rdquo;</p>
+      <span class="meta">Gao Xiang, EROFS maintainer &middot; <a href="https://lore.kernel.org/linux-erofs/atXMF9UT1qEpokcz@XiangdeMacBook-Pro.local/" target="_blank" rel="noopener">19 Oct 2026</a></span>
+    </blockquote>
+  </section>
+
+  <section id="patches" aria-labelledby="h-patches">
+    <h2 id="h-patches">The Patches</h2>
+    <div class="commits">
+      <article class="commit cover">
+        <div class="commit-head"><span>PATCH 0/2</span><span>2026-09-19</span><span>cover letter</span></div>
+        <h3>fsck.erofs: implement concurrent extraction and decompression</h3>
+        <div class="stat">6 files changed, <span class="add">+848</span> <span class="del">&minus;170</span> &middot; includes the full benchmark results</div>
+        <div class="commit-links">
+          <a href="https://lore.kernel.org/linux-erofs/20260919151443.29012-1-nithurshen.dev@gmail.com/T/#u" target="_blank" rel="noopener">[Thread on lore]</a>
+          <a href="patches/fsck-erofs-mt-extraction.mbox" download>[Download series .mbox]</a>
+        </div>
+      </article>
+      <article class="commit">
+        <div class="commit-head"><span class="sha">a54dbf5</span><span>PATCH 1/2</span><span>2026-09-19</span></div>
+        <h3>fsck.erofs: implement concurrent directory traversal</h3>
+        <div class="stat">3 files changed, <span class="add">+382</span> <span class="del">&minus;116</span> &middot; fsck/main.c, include/erofs/cond.h (new), include/erofs/lock.h</div>
+        <div class="commit-links">
+          <a href="https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/commit/?h=experimental-mt-extraction&amp;id=a54dbf580b6fe19309b33764696822b8d5245214" target="_blank" rel="noopener">[Commit]</a>
+          <a href="https://lore.kernel.org/linux-erofs/20260919151443.29012-2-nithurshen.dev@gmail.com/" target="_blank" rel="noopener">[lore]</a>
+          <a href="patches/0001-fsck.erofs-implement-concurrent-directory-traversal.patch" download>[Download]</a>
+        </div>
+      </article>
+      <article class="commit">
+        <div class="commit-head"><span class="sha">35330f7</span><span>PATCH 2/2</span><span>2026-09-19</span></div>
+        <h3>fsck.erofs: add multi-threaded decompression</h3>
+        <div class="stat">4 files changed, <span class="add">+467</span> <span class="del">&minus;55</span> &middot; fsck/main.c, lib/data.c, lib/global.c, include/erofs/internal.h</div>
+        <div class="commit-links">
+          <a href="https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git/commit/?h=experimental-mt-extraction&amp;id=35330f7706fb85df141dc52462b4c5339a266d86" target="_blank" rel="noopener">[Commit]</a>
+          <a href="https://lore.kernel.org/linux-erofs/20260919151443.29012-3-nithurshen.dev@gmail.com/" target="_blank" rel="noopener">[lore]</a>
+          <a href="patches/0002-fsck.erofs-add-multi-threaded-decompression.patch" download>[Download]</a>
+        </div>
+      </article>
+    </div>
+    <p class="prose">To try them, apply the series to the erofs-utils 1.9.4 release (<code>f36cadb</code>), which it applies to cleanly:</p>
+<pre><code>git clone https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git
+cd erofs-utils
+git checkout -b mt-extraction v1.9.4
+git am /path/to/fsck-erofs-mt-extraction.mbox
+./autogen.sh &amp;&amp; ./configure &amp;&amp; make
+fsck/fsck.erofs --extract=/tmp/out image.erofs</code></pre>
+  </section>
+
+  <section id="how" aria-labelledby="h-how">
+    <h2 id="h-how">How It Works</h2>
+    <div class="diagram" role="img" aria-label="The main thread puts the root inode on a task queue. Traversal workers take inodes from the queue and put each directory entry back on it as a new task. Small files and lz4 or zstd files are decompressed inline. Large LZMA or DEFLATE files are split into batches of 8 pclusters and sent round-robin to per-CPU decompression workers, which pwrite each result at its file offset.">
+      <svg class="wide-svg" viewBox="0 0 820 290" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="ahk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-k" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+        <rect class="box" x="10" y="95" width="110" height="60" rx="4"/>
+        <text class="t" x="65" y="121" text-anchor="middle">main thread</text>
+        <text class="t2" x="65" y="140" text-anchor="middle">waits for all</text>
+        <path class="edge" d="M120,125 L158,125" marker-end="url(#ah)"/>
+        <text class="el" x="139" y="114" text-anchor="middle">root</text>
+
+        <rect class="box" x="160" y="95" width="120" height="60" rx="4"/>
+        <text class="t" x="220" y="121" text-anchor="middle">task queue</text>
+        <text class="t2" x="220" y="140" text-anchor="middle">FIFO + cond var</text>
+        <path class="edge" d="M280,125 L318,125" marker-end="url(#ah)"/>
+
+        <rect class="box-k" x="320" y="40" width="150" height="170" rx="4"/>
+        <text class="t" x="395" y="67" text-anchor="middle">traversal workers</text>
+        <text class="t2" x="395" y="86" text-anchor="middle">one per CPU</text>
+        <text class="t2" x="395" y="116" text-anchor="middle">own path and</text>
+        <text class="t2" x="395" y="132" text-anchor="middle">dirstack per task</text>
+        <text class="t2" x="395" y="166" text-anchor="middle">hardlinks, stats</text>
+        <text class="t2" x="395" y="182" text-anchor="middle">under erofs_mutex_t</text>
+        <text class="el-k" x="395" y="202" text-anchor="middle">PATCH 1/2</text>
+
+        <path class="edge" d="M395,210 C395,258 220,258 220,157" marker-end="url(#ah)"/>
+        <text class="el" x="300" y="274" text-anchor="middle">each directory entry becomes a new task</text>
+
+        <path class="edge" d="M470,85 L568,85" marker-end="url(#ah)"/>
+        <text class="el" x="519" y="75" text-anchor="middle">other files</text>
+        <rect class="box" x="570" y="50" width="240" height="70" rx="4"/>
+        <text class="t" x="690" y="79" text-anchor="middle">decompress inline</text>
+        <text class="t2" x="690" y="99" text-anchor="middle">lz4, zstd, files &#8804; 128 KiB</text>
+
+        <path class="edge-k" d="M470,175 L568,175" marker-end="url(#ahk)"/>
+        <text class="el-k" x="519" y="160" text-anchor="middle">LZMA / DEFLATE</text>
+        <text class="el-k" x="519" y="192" text-anchor="middle">&gt; 128 KiB</text>
+        <rect class="box-k" x="570" y="138" width="240" height="104" rx="4"/>
+        <text class="t" x="690" y="163" text-anchor="middle">per-CPU decompression pool</text>
+        <text class="t2" x="690" y="183" text-anchor="middle">batches of 8 pclusters</text>
+        <text class="t2" x="690" y="199" text-anchor="middle">round-robin to worker queues</text>
+        <text class="t2" x="690" y="215" text-anchor="middle">pwrite() at each file offset</text>
+        <text class="el-k" x="690" y="234" text-anchor="middle">PATCH 2/2</text>
+      </svg>
+      <svg class="narrow" viewBox="0 0 360 524" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <defs>
+          <marker id="nah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="nahk" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="head-k" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+        <rect class="box" x="115" y="8" width="160" height="52" rx="4"/>
+        <text class="t" x="195" y="31" text-anchor="middle">main thread</text>
+        <text class="t2" x="195" y="49" text-anchor="middle">waits for all</text>
+        <path class="edge" d="M195,60 L195,88" marker-end="url(#nah)"/>
+        <text class="el" x="203" y="78">root</text>
+
+        <rect class="box" x="115" y="90" width="160" height="52" rx="4"/>
+        <text class="t" x="195" y="113" text-anchor="middle">task queue</text>
+        <text class="t2" x="195" y="131" text-anchor="middle">FIFO + cond var</text>
+        <path class="edge" d="M195,142 L195,170" marker-end="url(#nah)"/>
+
+        <rect class="box-k" x="85" y="172" width="220" height="140" rx="4"/>
+        <text class="t" x="195" y="195" text-anchor="middle">traversal workers</text>
+        <text class="t2" x="195" y="213" text-anchor="middle">one per CPU</text>
+        <text class="t2" x="195" y="235" text-anchor="middle">own path + dirstack</text>
+        <text class="t2" x="195" y="250" text-anchor="middle">per task</text>
+        <text class="t2" x="195" y="270" text-anchor="middle">hardlinks, stats under</text>
+        <text class="t2" x="195" y="285" text-anchor="middle">erofs_mutex_t</text>
+        <text class="el-k" x="195" y="303" text-anchor="middle">PATCH 1/2</text>
+
+        <path class="edge" d="M85,242 C35,242 35,116 113,116" marker-end="url(#nah)"/>
+        <text class="el" x="24" y="180" text-anchor="middle" transform="rotate(-90 24 180)">new task per dir entry</text>
+
+        <path class="edge" d="M150,312 L100,358" marker-end="url(#nah)"/>
+        <text class="el" x="72" y="336" text-anchor="middle">other files</text>
+        <path class="edge-k" d="M240,312 L268,358" marker-end="url(#nahk)"/>
+        <text class="el-k" x="306" y="330" text-anchor="middle">LZMA/DEFLATE</text>
+        <text class="el-k" x="306" y="344" text-anchor="middle">&gt; 128 KiB</text>
+
+        <rect class="box" x="8" y="360" width="164" height="84" rx="4"/>
+        <text class="t" x="90" y="384" text-anchor="middle">decompress inline</text>
+        <text class="t2" x="90" y="404" text-anchor="middle">lz4, zstd,</text>
+        <text class="t2" x="90" y="420" text-anchor="middle">files &#8804; 128 KiB</text>
+
+        <rect class="box-k" x="184" y="360" width="168" height="156" rx="4"/>
+        <text class="t" x="268" y="384" text-anchor="middle">decompression pool</text>
+        <text class="t2" x="268" y="404" text-anchor="middle">per-CPU workers</text>
+        <text class="t2" x="268" y="426" text-anchor="middle">batches of 8 pclusters</text>
+        <text class="t2" x="268" y="442" text-anchor="middle">round-robin</text>
+        <text class="t2" x="268" y="464" text-anchor="middle">pwrite() at offset</text>
+        <text class="el-k" x="268" y="500" text-anchor="middle">PATCH 2/2</text>
+      </svg>
+    </div>
+
+    <div class="cols">
+      <div>
+        <h3>Patch 1: concurrent directory traversal</h3>
+        <p>The old walk was recursive and kept its state in globals: one shared <code>extract_path</code> buffer that grew and shrank with the recursion, and one shared <code>dirstack</code> for loop detection. Threads can't share that, so each unit of work now carries its own.</p>
+        <ul class="points">
+          <li>Each inode is a <code>struct erofsfsck_inode_task</code> holding its parent NID, its NID, its own output path and its own copy of the directory stack, so <code>-ELOOP</code> detection still works per path.</li>
+          <li>Directory entries are queued as new tasks instead of recursive calls. One traversal worker per CPU takes tasks from the queue.</li>
+          <li>The main thread waits on a pending-task counter until the whole tree is done, then returns the first error any worker hit.</li>
+          <li>The hardlink table, the compression-ratio counters and the <code>corrupted</code> flag are protected with <code>erofs_mutex_t</code>.</li>
+          <li>A new <code>erofs_cond_t</code> wrapper (<code>include/erofs/cond.h</code>) and <code>erofs_mutex_destroy()</code> keep the code on erofs-utils' own primitives. Built without <code>EROFS_MT_ENABLED</code>, they become no-ops and fsck runs single-threaded as before.</li>
+        </ul>
+      </div>
+      <div>
+        <h3>Patch 2: multi-threaded decompression</h3>
+        <p>Parallel traversal alone doesn't help when one large LZMA file takes seconds to decompress, because one worker is stuck on it. Patch 2 spreads a single large file across all cores.</p>
+        <ul class="points">
+          <li>A per-CPU pool of decompression workers starts the first time it's needed (<code>pthread_once</code>) and stops in <code>liberofs_global_exit()</code>. Each worker has its own cache-line-aligned queue.</li>
+          <li>A per-file <code>struct z_erofs_mt_read_ctx</code> groups pclusters into batches of 8 and hands each batch to the next worker, round-robin. Batching keeps locking and thread wake-ups off the hot path.</li>
+          <li>Workers write each result to its logical offset with <code>pwrite()</code>, so out-of-order completion still gives correct output. The file is then <code>ftruncate()</code>d to <code>i_size</code> so trailing holes are right.</li>
+          <li>Only compressed files over 128 KiB that use LZMA or DEFLATE take this path, and only when no SHA-256 digest is being computed, since a digest needs the data in order. lz4 and zstd decompress fast enough that handing them off would cost more than it saves.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section id="results" aria-labelledby="h-results">
+    <h2 id="h-results">Results</h2>
+    <p class="prose">Extraction time with each patch, as a share of the time on current <code>master</code>. Best of 10 runs per configuration; three algorithms at five cluster sizes. Hosts: Acer Nitro 5 (WSL), Raspberry Pi 4 and MacBook Pro M4 Pro. Hover or focus a row for exact times.</p>
+
+    <div class="chart" id="chart">
+      <div class="legend" aria-hidden="true">
+        <span><i class="sw" style="background:var(--s1)"></i>master (100%)</span>
+        <span><i class="sw" style="background:var(--s2)"></i>patch 1</span>
+        <span><i class="sw" style="background:var(--s3)"></i>patches 1 + 2</span>
+        <span class="right">right column: total time saved</span>
+      </div>
+      <div id="groups"></div>
+      <div class="axis" aria-hidden="true"><span></span><div class="ticks"><span style="left:0">0%</span><span style="left:25%">25%</span><span style="left:50%">50%</span><span style="left:75%">75%</span><span style="left:100%">100%</span></div><span></span></div>
+      <div class="tip" id="tip" hidden></div>
+    </div>
+
+    <ul class="points prose">
+      <li><strong>Patch 1 speeds up every algorithm</strong> by 23&ndash;35%, because the directory walk and per-file work now overlap across cores.</li>
+      <li><strong>Patch 2 is where LZMA gains most:</strong> a further 57&ndash;70% on top of patch 1. At 64 KiB clusters, extraction drops from 76.19 s to 17.83 s.</li>
+      <li><strong>lz4hc and zstd barely change with patch 2</strong>, as intended. They don't use the decompression pool, so patch 2 adds no overhead for them.</li>
+      <li><strong>Run times become more predictable.</strong> lz4hc at 8 KiB measured 7.42 &plusmn; 13.7 s on master and 3.14 &plusmn; 0.77 s with both patches.</li>
+      <li><strong>Output integrity.</strong> During review, the extracted tree was compared bit for bit against the original directory for every algorithm and cluster size, and all checks passed. Later benchmark rounds of the traversal and combined patches also passed all integrity checks. The cover letter for the final series reports timings only.</li>
+    </ul>
+
+    <div class="table-block">
+      <h3>Minimum extraction time (best of 10 runs)</h3>
+      <div class="table-wrap">
+        <table id="t-min">
+          <thead><tr><th>Algorithm</th><th>Cluster</th><th>master</th><th>Patch 1</th><th>Patches 1+2</th><th>Patch 1 gain</th><th>Patch 2 gain</th><th>Total</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="table-block">
+      <h3>Mean &plusmn; standard deviation (10 runs)</h3>
+      <div class="table-wrap">
+        <table id="t-mean">
+          <thead><tr><th>Algorithm</th><th>Cluster</th><th>master</th><th>Patch 1</th><th>Patches 1+2</th><th>Patch 1 gain</th><th>Patch 2 gain</th><th>Total</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+      <p class="meta">Patch 1 gain: patch 1 against master. Patch 2 gain: patches 1+2 against patch 1. Total: patches 1+2 against master. Source: the <a href="https://lore.kernel.org/linux-erofs/20260919151443.29012-1-nithurshen.dev@gmail.com/" target="_blank" rel="noopener">cover letter</a> of the final series.</p>
+    </div>
+  </section>
+
+  <section id="timeline" aria-labelledby="h-timeline">
+    <h2 id="h-timeline">Timeline</h2>
+    <ol class="log">
+      <li><time>2026-09-19</time><span class="what"><a href="https://lore.kernel.org/linux-erofs/20260919151443.29012-1-nithurshen.dev@gmail.com/" target="_blank" rel="noopener">[PATCH 0/2] fsck.erofs: implement concurrent extraction and decompression</a></span></li>
+      <li><time>2026-09-19</time><span class="what"><a href="https://lore.kernel.org/linux-erofs/20260919151443.29012-2-nithurshen.dev@gmail.com/" target="_blank" rel="noopener">[PATCH 1/2] fsck.erofs: implement concurrent directory traversal</a></span></li>
+      <li><time>2026-09-19</time><span class="what"><a href="https://lore.kernel.org/linux-erofs/20260919151443.29012-3-nithurshen.dev@gmail.com/" target="_blank" rel="noopener">[PATCH 2/2] fsck.erofs: add multi-threaded decompression</a></span></li>
+      <li><time>2026-10-19</time><span class="what"><a href="https://lore.kernel.org/linux-erofs/atXMF9UT1qEpokcz@XiangdeMacBook-Pro.local/" target="_blank" rel="noopener">Maintainer applies the series to experimental-mt-extraction</a></span></li>
+      <li><time>next</time><span class="what">Gao Xiang finalizes the series for the upstream merge into <a href="https://git.kernel.org/pub/scm/linux/kernel/git/xiang/erofs-utils.git" target="_blank" rel="noopener">erofs-utils</a> <code>master</code></span></li>
+    </ol>
+  </section>
+
+  <footer>
+    <span>&copy; 2026 Nithurshen</span>
+    <a href="https://nithurshen.github.io">nithurshen.github.io</a>
+  </footer>
+
+</main>
+
+<script>
+(function () {
+  var min = {
+    lz4hc: [[4096,3.80,2.75,2.74,27.6,0.4,27.9],[8192,3.55,2.68,2.60,24.5,3.0,26.8],[16384,3.43,2.59,2.58,24.5,0.4,24.8],[32768,3.52,2.57,2.44,27.0,5.1,30.7],[65536,3.37,2.33,2.33,30.9,0.0,30.9]],
+    zstd:  [[4096,4.33,3.00,2.86,30.7,4.7,33.9],[8192,4.21,2.88,2.84,31.6,1.4,32.5],[16384,4.00,2.75,2.69,31.2,2.2,32.8],[32768,3.98,2.61,2.58,34.4,1.1,35.2],[65536,3.89,2.59,2.56,33.4,1.2,34.2]],
+    lzma:  [[4096,51.44,33.39,14.23,35.1,57.4,72.3],[8192,61.08,42.71,15.11,30.1,64.6,75.3],[16384,65.37,47.38,15.77,27.5,66.7,75.9],[32768,70.51,52.73,16.44,25.2,68.8,76.7],[65536,76.19,58.38,17.83,23.4,69.5,76.6]]
+  };
+  var mean = [
+    ['lz4hc',4096,'5.37 ± 6.98','4.21 ± 0.99','3.30 ± 0.85',21.6,21.6,38.5],
+    ['lz4hc',8192,'7.42 ± 13.7','3.98 ± 0.51','3.14 ± 0.77',46.4,21.1,57.7],
+    ['lz4hc',16384,'4.06 ± 0.95','3.27 ± 0.86','3.02 ± 0.77',19.5,7.6,25.6],
+    ['lz4hc',32768,'5.33 ± 3.29','2.88 ± 0.47','2.76 ± 0.28',46.0,4.2,48.2],
+    ['lz4hc',65536,'4.40 ± 2.11','3.11 ± 1.19','2.65 ± 0.56',29.4,14.7,39.8],
+    ['zstd',4096,'5.96 ± 3.65','4.01 ± 1.97','3.08 ± 0.36',32.7,23.2,48.3],
+    ['zstd',8192,'4.99 ± 2.23','3.08 ± 0.33','3.03 ± 0.16',38.4,1.7,39.4],
+    ['zstd',16384,'5.42 ± 4.06','3.13 ± 0.53','3.03 ± 0.46',42.2,3.1,44.0],
+    ['zstd',32768,'5.34 ± 3.90','3.96 ± 3.19','3.05 ± 0.52',25.8,23.0,42.9],
+    ['zstd',65536,'6.08 ± 4.36','3.86 ± 3.24','2.87 ± 0.39',36.5,25.6,52.8],
+    ['lzma',4096,'52.16 ± 0.6','34.38 ± 2.1','16.06 ± 3.1',34.1,53.3,69.2],
+    ['lzma',8192,'61.45 ± 0.4','43.34 ± 0.9','15.85 ± 0.6',29.5,63.4,74.2],
+    ['lzma',16384,'65.69 ± 0.5','47.78 ± 0.4','16.30 ± 0.4',27.3,65.9,75.2],
+    ['lzma',32768,'70.79 ± 0.3','53.02 ± 0.3','17.15 ± 0.4',25.1,67.6,75.8],
+    ['lzma',65536,'76.50 ± 0.4','58.71 ± 0.3','18.10 ± 0.2',23.3,69.2,76.3]
+  ];
+  function kib(c) { return (c / 1024) + ' KiB'; }
+  function s(v) { return v.toFixed(2) + ' s'; }
+  function pct(v) { return v.toFixed(1) + '%'; }
+  function pad(t, n) { while (t.length < n) t += ' '; return t; }
+
+  var groups = document.getElementById('groups');
+  var tmin = document.querySelector('#t-min tbody');
+  Object.keys(min).forEach(function (alg) {
+    var g = document.createElement('div');
+    g.className = 'group';
+    g.innerHTML = '<p class="group-name">' + alg + '</p>';
+    min[alg].forEach(function (r, i) {
+      var row = document.createElement('div');
+      row.className = 'row';
+      row.tabIndex = 0;
+      row.setAttribute('aria-label', alg + ', ' + kib(r[0]) + ' clusters: master ' + s(r[1]) + ', patch 1 ' + s(r[2]) + ', patches 1 and 2 ' + s(r[3]) + ', ' + pct(r[6]) + ' less time');
+      row.innerHTML = '<span class="cl">' + kib(r[0]) + '</span>' +
+        '<div class="track"><i class="b1"></i><i class="b2" style="width:' + (r[2] / r[1] * 100).toFixed(1) + '%"></i><i class="b3" style="width:' + (r[3] / r[1] * 100).toFixed(1) + '%"></i></div>' +
+        '<span class="gain">&minus;' + pct(r[6]) + '</span>';
+      row.tipText = alg + ', ' + kib(r[0]) + ' clusters\n' +
+        pad('master', 12) + s(r[1]) + '\n' +
+        pad('patch 1', 12) + s(r[2]) + '  (−' + pct(r[4]) + ')\n' +
+        pad('patches 1+2', 12) + s(r[3]) + '  (−' + pct(r[5]) + ' more)';
+      g.appendChild(row);
+      var tr = document.createElement('tr');
+      if (i === 0 && alg !== 'lz4hc') tr.className = 'first';
+      tr.innerHTML = '<td>' + alg + '</td><td>' + r[0] + '</td><td>' + s(r[1]) + '</td><td>' + s(r[2]) + '</td><td>' + s(r[3]) + '</td><td>' + pct(r[4]) + '</td><td>' + pct(r[5]) + '</td><td class="total">' + pct(r[6]) + '</td>';
+      tmin.appendChild(tr);
+    });
+    groups.appendChild(g);
+  });
+
+  var tmean = document.querySelector('#t-mean tbody');
+  mean.forEach(function (r, i) {
+    var tr = document.createElement('tr');
+    if (i > 0 && mean[i - 1][0] !== r[0]) tr.className = 'first';
+    tr.innerHTML = '<td>' + r[0] + '</td><td>' + r[1] + '</td><td>' + r[2] + ' s</td><td>' + r[3] + ' s</td><td>' + r[4] + ' s</td><td>' + pct(r[5]) + '</td><td>' + pct(r[6]) + '</td><td class="total">' + pct(r[7]) + '</td>';
+    tmean.appendChild(tr);
+  });
+
+  var tip = document.getElementById('tip');
+  var chart = document.getElementById('chart');
+  function show(row) {
+    tip.textContent = row.tipText;
+    tip.hidden = false;
+    var cr = chart.getBoundingClientRect(), rr = row.getBoundingClientRect();
+    var left = Math.min(Math.max(8, rr.left - cr.left + rr.width / 2 - tip.offsetWidth / 2), cr.width - tip.offsetWidth - 8);
+    var top = rr.top - cr.top - tip.offsetHeight - 6;
+    if (top < 4) top = rr.bottom - cr.top + 6;
+    tip.style.left = left + 'px';
+    tip.style.top = top + 'px';
+  }
+  function hide() { tip.hidden = true; }
+  groups.addEventListener('mouseover', function (e) { var r = e.target.closest('.row'); if (r) show(r); });
+  groups.addEventListener('mouseleave', hide);
+  groups.addEventListener('focusin', function (e) { var r = e.target.closest('.row'); if (r) show(r); });
+  groups.addEventListener('focusout', hide);
+})();
+</script>
+
+</body>
+</html>
