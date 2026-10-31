@@ -12,10 +12,27 @@
 
 </head>
 <body>
+<div class="site-bar">
+  <nav class="site-nav" aria-label="Site">
+    <a class="brand" href="https://nithurshen.github.io/">K S Nithurshen</a>
+    <ul>
+      <li><a href="https://nithurshen.github.io/">Home</a></li>
+      <li><a href="https://nithurshen.github.io/gsoc2026/" aria-current="page">GSoC&rsquo;26</a></li>
+    </ul>
+  </nav>
+</div>
 <main>
 
   <header>
-    <p class="handle">Google Summer of Code 2026 &middot; EROFS Filesystem &middot; Final Report</p>
+    <div class="program">
+      <img class="gsoc" src="images/gsoc.png" width="250" height="250" alt="">
+      <div class="program-text">
+        <p class="program-name">Google Summer of Code 2026</p>
+        <p class="program-sub">Final report &middot; EROFS Filesystem</p>
+      </div>
+      <span class="sep" aria-hidden="true"></span>
+      <img class="erofs" src="images/erofs.png" width="280" height="130" alt="EROFS">
+    </div>
     <h1>Multi-threaded Extraction for <code>fsck.erofs</code></h1>
     <p class="bio prose">I made <code>fsck.erofs</code> check and extract EROFS images on all CPU cores instead of one. Directories are walked by a pool of worker threads, and large LZMA and DEFLATE files are decompressed in parallel batches.</p>
     <dl class="facts">
@@ -276,6 +293,7 @@ fsck/fsck.erofs --extract=/tmp/out image.erofs</code></pre>
 
   <footer>
     <span>&copy; 2026 Nithurshen</span>
+    <a class="to-top" href="#top">Back to top <span aria-hidden="true">&uarr;</span></a>
     <a href="https://nithurshen.github.io">nithurshen.github.io</a>
   </footer>
 
